@@ -29,20 +29,21 @@ OANDA v20 REST API の **参照系(read-only)** 機能を Claude から使える
 
 Python 3.10 以上が必要です。
 
-```bash
-cd oanda-mcp
+```powershell
+cd D:\oanda-mcp
 pip install -e .
 ```
 
-## 3. 認証情報の設定(.env 推奨)
+## 3. 認証情報の設定(.env)
 
-プロジェクト直下に `.env` ファイルを作るのが最も簡単です(自動で読み込まれます):
+プロジェクト直下に `.env` ファイルを作ります(サーバー起動時に自動で読み込まれます。
+環境変数の設定は不要です):
 
-```bash
-cp .env.example .env   # Windows: copy .env.example .env
+```powershell
+copy .env.example .env    # macOS/Linux: cp .env.example .env
 ```
 
-`.env` の中身:
+`.env` をエディタで開き、自分の値に書き換えます:
 
 ```
 OANDA_API_TOKEN=あなたのトークン
@@ -50,53 +51,49 @@ OANDA_ACCOUNT_ID=101-001-1234567-001
 OANDA_ENV=practice
 ```
 
-`.env` はカレントディレクトリ(とその親)→ プロジェクトルートの順で検索されます。
-既に設定済みの環境変数が優先されます。
+`.env` の検索順は「`OANDA_DOTENV` で明示指定したパス → カレントディレクトリと
+その親 → プロジェクトルート」です。同名の環境変数が既に設定されている場合は
+そちらが優先されます。
 
-環境変数で渡す場合:
-
-```powershell
-# Windows (PowerShell)
-$env:OANDA_API_TOKEN = "あなたのトークン"
-$env:OANDA_ACCOUNT_ID = "101-001-1234567-001"
-$env:OANDA_ENV = "practice"
-```
-
-```bash
-# macOS / Linux (bash)
-export OANDA_API_TOKEN="あなたのトークン"
-export OANDA_ACCOUNT_ID="101-001-1234567-001"
-export OANDA_ENV="practice"
-```
+**注意**: `.env` は `.gitignore` で除外済みです。コミットしないでください。
 
 ## 4. 動作確認(MCP Inspector)
 
-```bash
-cd oanda-mcp   # .env のある場所で
+```powershell
+cd D:\oanda-mcp   # .env のある場所で起動する
 npx @modelcontextprotocol/inspector oanda-mcp
 ```
 
-ブラウザで Inspector が開くので、`get_price` に `USD_JPY` を渡すなどして
-レスポンスが返ることを確認してください。
+ブラウザで Inspector が開いたら:
 
-テストだけ走らせる場合:
+1. Arguments欄は**空のまま**、**Connect** をクリック(左下が緑の「Connected」になる)
+2. 上部の **Tools** タブ → **List Tools** で8ツールが表示される
+3. `get_price` を選び、`instruments` に `USD_JPY` を入力して **Run Tool**
+4. 現在のbid/askがJSONで返れば成功
 
-```bash
-python tests/test_server.py
+## 5. Claude Desktop への登録
+
+設定ファイルの場所:
+
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+**`command` には `oanda-mcp` 実行ファイルのフルパスを指定してください。**
+Claude Desktop はターミナルと同じ PATH を引き継がないため、コマンド名だけでは
+起動に失敗することがあります。フルパスは PowerShell で確認できます:
+
+```powershell
+(Get-Command oanda-mcp).Source
+# 例: C:\Users\<ユーザー名>\AppData\Local\Programs\Python\Python311\Scripts\oanda-mcp.exe
 ```
 
-## 5. Claude への登録
-
-### Claude Desktop
-
-`claude_desktop_config.json`(macOS: `~/Library/Application Support/Claude/`、
-Windows: `%APPDATA%\Claude\`)に追記します:
+確認したパスを使って設定します(JSON内の `\` は `\\` にエスケープ):
 
 ```json
 {
   "mcpServers": {
     "oanda": {
-      "command": "oanda-mcp",
+      "command": "C:\\Users\\<ユーザー名>\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\oanda-mcp.exe",
       "env": {
         "OANDA_DOTENV": "D:\\oanda-mcp\\.env"
       }
@@ -105,26 +102,25 @@ Windows: `%APPDATA%\Claude\`)に追記します:
 }
 ```
 
-`.env` を使わない場合は、`env` に `OANDA_API_TOKEN` / `OANDA_ACCOUNT_ID` /
-`OANDA_ENV` を直接書くこともできます。
+`OANDA_DOTENV` で `.env` の場所を明示しているのは、Claude Desktop からの起動では
+カレントディレクトリがプロジェクト外になるためです。
 
-`oanda-mcp` コマンドが PATH にない場合は、`"command": "python"`,
-`"args": ["-m", "oanda_mcp.server"]` の形式でも起動できます。
+保存後、Claude Desktop を**完全に再起動**(タスクトレイのアイコンからも終了)すると
+「oanda」サーバーが認識されます。「ドル円の今のレートは?」のように話しかければ
+ツールが呼ばれます。
 
-### Claude Code
+## 6. Claude Code への登録(任意)
 
-```bash
-claude mcp add oanda \
-  -e OANDA_API_TOKEN="あなたのトークン" \
-  -e OANDA_ACCOUNT_ID="101-001-1234567-001" \
-  -e OANDA_ENV="practice" \
-  -- oanda-mcp
+```powershell
+claude mcp add oanda -e OANDA_DOTENV="D:\oanda-mcp\.env" -- oanda-mcp
 ```
 
-登録後、Claude に「ドル円の今のレートは?」「USD_JPYの日足を30本見せて」の
-ように話しかければツールが呼ばれます。
+Claude Code はターミナルから起動するため、こちらはコマンド名のままで動きます
+(動かない場合はフルパスを指定してください)。
 
-## 6. 環境変数
+## 7. 環境変数リファレンス
+
+通常は `.env` に書くだけで足ります。
 
 | 変数 | 必須 | 説明 |
 |---|---|---|
@@ -133,9 +129,15 @@ claude mcp add oanda \
 | `OANDA_ENV` | - | `practice`(デフォルト)/ `live` |
 | `OANDA_DOTENV` | - | 読み込む `.env` ファイルのパスを明示指定 |
 
+## テスト
+
+```powershell
+python tests\test_server.py
+```
+
 ## 注意事項
 
-- トークンは口座への広い権限を持ちます。設定ファイルの取り扱いに注意し、
+- トークンは口座への広い権限を持ちます。`.env` の取り扱いに注意し、
   リポジトリにコミットしないでください。
 - `OANDA_ENV=live` にすると本番口座のデータを参照します(このサーバーは
   参照のみなので発注はできませんが、口座情報は実データになります)。
