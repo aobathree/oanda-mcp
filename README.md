@@ -34,13 +34,45 @@ cd oanda-mcp
 pip install -e .
 ```
 
-## 3. 動作確認(MCP Inspector)
+## 3. 認証情報の設定(.env 推奨)
+
+プロジェクト直下に `.env` ファイルを作るのが最も簡単です(自動で読み込まれます):
 
 ```bash
+cp .env.example .env   # Windows: copy .env.example .env
+```
+
+`.env` の中身:
+
+```
+OANDA_API_TOKEN=あなたのトークン
+OANDA_ACCOUNT_ID=101-001-1234567-001
+OANDA_ENV=practice
+```
+
+`.env` はカレントディレクトリ(とその親)→ プロジェクトルートの順で検索されます。
+既に設定済みの環境変数が優先されます。
+
+環境変数で渡す場合:
+
+```powershell
+# Windows (PowerShell)
+$env:OANDA_API_TOKEN = "あなたのトークン"
+$env:OANDA_ACCOUNT_ID = "101-001-1234567-001"
+$env:OANDA_ENV = "practice"
+```
+
+```bash
+# macOS / Linux (bash)
 export OANDA_API_TOKEN="あなたのトークン"
 export OANDA_ACCOUNT_ID="101-001-1234567-001"
-export OANDA_ENV="practice"   # 省略時も practice
+export OANDA_ENV="practice"
+```
 
+## 4. 動作確認(MCP Inspector)
+
+```bash
+cd oanda-mcp   # .env のある場所で
 npx @modelcontextprotocol/inspector oanda-mcp
 ```
 
@@ -53,7 +85,7 @@ npx @modelcontextprotocol/inspector oanda-mcp
 python tests/test_server.py
 ```
 
-## 4. Claude への登録
+## 5. Claude への登録
 
 ### Claude Desktop
 
@@ -66,14 +98,15 @@ Windows: `%APPDATA%\Claude\`)に追記します:
     "oanda": {
       "command": "oanda-mcp",
       "env": {
-        "OANDA_API_TOKEN": "あなたのトークン",
-        "OANDA_ACCOUNT_ID": "101-001-1234567-001",
-        "OANDA_ENV": "practice"
+        "OANDA_DOTENV": "D:\\oanda-mcp\\.env"
       }
     }
   }
 }
 ```
+
+`.env` を使わない場合は、`env` に `OANDA_API_TOKEN` / `OANDA_ACCOUNT_ID` /
+`OANDA_ENV` を直接書くこともできます。
 
 `oanda-mcp` コマンドが PATH にない場合は、`"command": "python"`,
 `"args": ["-m", "oanda_mcp.server"]` の形式でも起動できます。
@@ -91,13 +124,14 @@ claude mcp add oanda \
 登録後、Claude に「ドル円の今のレートは?」「USD_JPYの日足を30本見せて」の
 ように話しかければツールが呼ばれます。
 
-## 5. 環境変数
+## 6. 環境変数
 
 | 変数 | 必須 | 説明 |
 |---|---|---|
 | `OANDA_API_TOKEN` | ✔ | パーソナルアクセストークン |
 | `OANDA_ACCOUNT_ID` | ✔ | 口座ID |
 | `OANDA_ENV` | - | `practice`(デフォルト)/ `live` |
+| `OANDA_DOTENV` | - | 読み込む `.env` ファイルのパスを明示指定 |
 
 ## 注意事項
 

@@ -1,6 +1,6 @@
 """Thin async client for the OANDA v20 REST API.
 
-Environment variables:
+Configuration (environment variables, or a .env file — see _load_dotenv):
     OANDA_API_TOKEN   : personal access token (required)
     OANDA_ACCOUNT_ID  : default account ID, e.g. "101-001-1234567-001" (required)
     OANDA_ENV         : "practice" (default) or "live"
@@ -9,6 +9,7 @@ Environment variables:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -17,6 +18,47 @@ _HOSTS = {
     "practice": "https://api-fxpractice.oanda.com",
     "live": "https://api-fxtrade.oanda.com",
 }
+
+
+def _load_dotenv() -> None:
+    """Load a .env file into os.environ (without overriding existing vars).
+
+    Searched in order; the first file found wins:
+      1. $OANDA_DOTENV (explicit path, if set)
+      2. .env in the current working directory and its parents
+      3. .env at the project root (three levels up from this file,
+         for a source checkout like D:/oanda-mcp)
+    """
+    candidates: list[Path] = []
+    explicit = os.environ.get("OANDA_DOTENV")
+    if explicit:
+        candidates.append(Path(explicit))
+    cwd = Path.cwd()
+    candidates.extend(p / ".env" for p in [cwd, *cwd.parents])
+    candidates.append(Path(__file__).resolve().parents[2] / ".env")
+
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        raw = path.read_bytes()
+        # Tolerate Windows editors/PowerShell: UTF-8 BOM and UTF-16 files.
+        if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+            text = raw.decode("utf-16")
+        else:
+            text = raw.decode("utf-8-sig", errors="replace")
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
+        return  # only the first .env found is loaded
 
 
 class OandaError(RuntimeError):
@@ -31,6 +73,7 @@ class OandaClient:
         environment: str | None = None,
         timeout: float = 20.0,
     ) -> None:
+        _load_dotenv()
         self.token = token or os.environ.get("OANDA_API_TOKEN", "")
         self.account_id = account_id or os.environ.get("OANDA_ACCOUNT_ID", "")
         env = (environment or os.environ.get("OANDA_ENV", "practice")).lower()
@@ -64,15 +107,29 @@ class OandaClient:
         # Drop params whose value is None so httpx does not send them.
         clean = {k: v for k, v in (params or {}).items() if v is not None}
         url = f"{self.base_url}{path}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(url, headers=self._headers, params=clean)
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True
+            ) as client:
+                resp = await client.get(url, headers=self._headers, params=clean)
+        except httpx.HTTPError as e:
+            raise OandaError(
+                f"HTTP request to OANDA failed ({type(e).__name__}): {e} [url={url}]"
+            ) from e
         if resp.status_code >= 400:
             try:
                 detail = resp.json().get("errorMessage", resp.text)
             except Exception:  # noqa: BLE001
                 detail = resp.text
             raise OandaError(f"OANDA API error {resp.status_code}: {detail}")
-        return resp.json()
+        try:
+            return resp.json()
+        except Exception as e:  # non-JSON body (redirect page, proxy, empty)
+            snippet = resp.text[:200].strip() or "(empty body)"
+            raise OandaError(
+                f"OANDA returned a non-JSON response "
+                f"(status {resp.status_code}, url={resp.url}): {snippet}"
+            ) from e
 
     # ---- convenience wrappers (all read-only GET endpoints) ----
 
