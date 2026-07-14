@@ -36,14 +36,17 @@ pip install -e .
 
 ## 3. 認証情報の設定(.env)
 
-プロジェクト直下に `.env` ファイルを作ります(サーバー起動時に自動で読み込まれます。
+`.env` ファイルは**プロジェクトの外**、ホームディレクトリ配下の
+`%USERPROFILE%\.oanda\.env` に置きます(サーバー起動時に自動で読み込まれます。
 環境変数の設定は不要です):
 
 ```powershell
-copy .env.example .env    # macOS/Linux: cp .env.example .env
+New-Item -ItemType Directory -Force $env:USERPROFILE\.oanda | Out-Null
+copy .env.example $env:USERPROFILE\.oanda\.env
+notepad $env:USERPROFILE\.oanda\.env
 ```
 
-`.env` をエディタで開き、自分の値に書き換えます:
+エディタが開いたら自分の値に書き換えます:
 
 ```
 OANDA_API_TOKEN=あなたのトークン
@@ -51,18 +54,24 @@ OANDA_ACCOUNT_ID=101-001-1234567-001
 OANDA_ENV=practice
 ```
 
-`.env` の検索順は「`OANDA_DOTENV` で明示指定したパス → カレントディレクトリと
-その親 → プロジェクトルート」です。同名の環境変数が既に設定されている場合は
-そちらが優先されます。
+**プロジェクト直下に `.env` を置かない理由**: このフォルダーで Claude Code などの
+コーディングエージェントを使うと、ワークスペース内のファイルとして認証情報が
+読める状態になるためです(Webull 公式 MCP サーバーのセキュリティ指針に倣った
+配置です)。`.gitignore` では引き続き `.env` を除外していますが、これは誤って
+プロジェクト内に置いてしまった場合の保険です。
 
-**注意**: `.env` は `.gitignore` で除外済みです。コミットしないでください。
+`.env` の検索順は「`OANDA_DOTENV` で明示指定したパス → カレントディレクトリと
+その親 → プロジェクトルート → `%USERPROFILE%\.oanda\.env`」です。同名の
+環境変数が既に設定されている場合はそちらが優先されます。
 
 ## 4. 動作確認(MCP Inspector)
 
 ```powershell
-cd D:\oanda-mcp   # .env のある場所で起動する
 npx @modelcontextprotocol/inspector oanda-mcp
 ```
+
+(`.env` は `%USERPROFILE%\.oanda\.env` から自動で読み込まれるため、
+どのディレクトリから起動しても構いません)
 
 ブラウザで Inspector が開いたら:
 
@@ -93,17 +102,15 @@ Claude Desktop はターミナルと同じ PATH を引き継がないため、�
 {
   "mcpServers": {
     "oanda": {
-      "command": "C:\\Users\\<ユーザー名>\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\oanda-mcp.exe",
-      "env": {
-        "OANDA_DOTENV": "D:\\oanda-mcp\\.env"
-      }
+      "command": "C:\\Users\\<ユーザー名>\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\oanda-mcp.exe"
     }
   }
 }
 ```
 
-`OANDA_DOTENV` で `.env` の場所を明示しているのは、Claude Desktop からの起動では
-カレントディレクトリがプロジェクト外になるためです。
+`.env` は `%USERPROFILE%\.oanda\.env` から自動で読み込まれるため、`env` ブロックは
+不要です。別の場所に置いた場合のみ、`env` ブロックで `OANDA_DOTENV` にそのパスを
+指定してください。
 
 保存後、Claude Desktop を**完全に再起動**(タスクトレイのアイコンからも終了)すると
 「oanda」サーバーが認識されます。「ドル円の今のレートは?」のように話しかければ
@@ -112,7 +119,7 @@ Claude Desktop はターミナルと同じ PATH を引き継がないため、�
 ## 6. Claude Code への登録(任意)
 
 ```powershell
-claude mcp add oanda -e OANDA_DOTENV="D:\oanda-mcp\.env" -- oanda-mcp
+claude mcp add oanda -- oanda-mcp
 ```
 
 Claude Code はターミナルから起動するため、こちらはコマンド名のままで動きます
@@ -120,7 +127,7 @@ Claude Code はターミナルから起動するため、こちらはコマン�
 
 ## 7. 環境変数リファレンス
 
-通常は `.env` に書くだけで足ります。
+通常は `%USERPROFILE%\.oanda\.env` に書くだけで足ります。
 
 | 変数 | 必須 | 説明 |
 |---|---|---|
@@ -131,14 +138,23 @@ Claude Code はターミナルから起動するため、こちらはコマン�
 
 ## テスト
 
+2層構成です(公式 Alpaca MCP サーバーのテスト戦略に倣ったもの):
+
 ```powershell
-python tests\test_server.py
+python tests\test_server.py        # ユニット: モックのみ、認証情報・ネットワーク不要
+python tests\test_integration.py   # 統合: practice口座の実APIに read-only GET で接続
 ```
+
+統合テストは `.env` に実際の認証情報がないとき、および `OANDA_ENV=live` の
+ときは自動的にスキップされます(安全のため live 口座では実行されません)。
+
+なお、API リクエストには `User-Agent: oanda-mcp/<version>` が付与されます。
 
 ## 注意事項
 
-- トークンは口座への広い権限を持ちます。`.env` の取り扱いに注意し、
-  リポジトリにコミットしないでください。
+- トークンは口座への広い権限を持ちます。`.env` はプロジェクトの外
+  (`%USERPROFILE%\.oanda\.env`)に置き、リポジトリにコミットしたり
+  チャットに貼り付けたりしないでください。
 - `OANDA_ENV=live` にすると本番口座のデータを参照します(このサーバーは
   参照のみなので発注はできませんが、口座情報は実データになります)。
 - OANDA証券(日本)の口座でAPIを使う場合は、口座コースごとのAPI利用条件を

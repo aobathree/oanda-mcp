@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 
+from . import __version__
+
 _HOSTS = {
     "practice": "https://api-fxpractice.oanda.com",
     "live": "https://api-fxtrade.oanda.com",
@@ -28,6 +30,9 @@ def _load_dotenv() -> None:
       2. .env in the current working directory and its parents
       3. .env at the project root (three levels up from this file,
          for a source checkout like D:/oanda-mcp)
+      4. ~/.oanda/.env — the recommended location, outside any project
+         directory so coding agents and other tools working in the
+         project tree cannot read the credentials as a workspace file
     """
     candidates: list[Path] = []
     explicit = os.environ.get("OANDA_DOTENV")
@@ -36,6 +41,7 @@ def _load_dotenv() -> None:
     cwd = Path.cwd()
     candidates.extend(p / ".env" for p in [cwd, *cwd.parents])
     candidates.append(Path(__file__).resolve().parents[2] / ".env")
+    candidates.append(Path.home() / ".oanda" / ".env")
 
     for path in candidates:
         try:
@@ -100,6 +106,7 @@ class OandaClient:
             "Authorization": f"Bearer {self.token}",
             "Accept-Datetime-Format": "RFC3339",
             "Content-Type": "application/json",
+            "User-Agent": f"oanda-mcp/{__version__}",
         }
 
     async def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:

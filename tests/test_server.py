@@ -41,6 +41,7 @@ def test_client_env_config() -> None:
     c = OandaClient()
     assert c.base_url == "https://api-fxpractice.oanda.com"
     assert c._headers["Authorization"] == "Bearer test-token"
+    assert c._headers["User-Agent"].startswith("oanda-mcp/")
 
 
 def test_get_price_formats_output() -> None:
