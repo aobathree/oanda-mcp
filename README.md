@@ -125,6 +125,36 @@ claude mcp add oanda -- oanda-mcp
 Claude Code はターミナルから起動するため、こちらはコマンド名のままで動きます
 (動かない場合はフルパスを指定してください)。
 
+### どのプロジェクトからでも使う(user スコープ + フルパス)
+
+上のコマンドはデフォルトの **local スコープ**(実行したプロジェクト限定)で
+登録されます。どのプロジェクトからでも使いたい場合は `--scope user` を
+付けます。また、デスクトップアプリ版など PATH を引き継がない環境でも
+確実に起動するよう、`command` には実行ファイルのフルパスを指定するのが
+安全です:
+
+```powershell
+# フルパスを確認
+(Get-Command oanda-mcp).Source
+# 例: C:\Users\<ユーザー名>\...\Python313\Scripts\oanda-mcp.exe
+
+# user スコープでフルパス登録
+claude mcp add --scope user oanda -- "<上で確認したフルパス>"
+```
+
+登録後は接続状態を確認できます:
+
+```powershell
+claude mcp list
+# oanda: ...\oanda-mcp.exe - √ Connected と表示されれば成功
+```
+
+設定は `%USERPROFILE%\.claude.json` に保存されます。なお、Microsoft Store 版
+Python を使っている場合、Python のバージョンアップで Scripts フォルダーの
+パスが変わるため、その際は `claude mcp add` を再実行してください。
+起動中の Claude Code セッションには途中から追加したサーバーは反映されません。
+新しいセッションを開くとツールが使えるようになります。
+
 ## 7. 環境変数リファレンス
 
 通常は `%USERPROFILE%\.oanda\.env` に書くだけで足ります。
