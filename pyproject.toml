@@ -4,7 +4,7 @@ version = "0.3.0"
 description = "MCP server for the OANDA v20 REST API (read-only tools)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Aoba Three", email = "research@aobathree.com" }]
 dependencies = [
     "mcp>=1.2.0",
@@ -15,7 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-    "ruff>=0.5",
+    "ruff>=0.15,<0.16",  # bounded so a future default-rule change cannot break CI
     "mypy>=1.10",
 ]
 
@@ -23,7 +23,7 @@ dev = [
 oanda-mcp = "oanda_mcp.server:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 os.environ.setdefault("OANDA_API_TOKEN", "test-token")
@@ -17,7 +19,7 @@ os.environ.setdefault("OANDA_ACCOUNT_ID", "101-001-1234567-001")
 os.environ.setdefault("OANDA_ENV", "practice")
 
 from oanda_mcp import server  # noqa: E402
-from oanda_mcp.client import OandaClient, _load_dotenv  # noqa: E402
+from oanda_mcp.client import OandaClient, OandaError, _load_dotenv  # noqa: E402
 
 EXPECTED_TOOLS = {
     "get_price",
@@ -75,7 +77,7 @@ def test_get_price_formats_output() -> None:
 def test_candles_param_rules() -> None:
     captured: dict = {}
 
-    async def fake_get(self, path, params=None):  # noqa: ANN001
+    async def fake_get(self, path, params=None):
         captured["path"] = path
         captured["params"] = params
         return {"instrument": "USD_JPY", "granularity": "D", "candles": []}
@@ -107,8 +109,8 @@ def test_schema_constraints() -> None:
 
 
 def test_transactions_count_bounds() -> None:
-    async def fake_get(self, path, params=None):  # noqa: ANN001
-        return {"pages": [], "count": 0}
+    async def fake_get(self, path, params=None):
+        return {"lastTransactionID": "0"}
 
     with patch.object(OandaClient, "get", new=fake_get):
         c = OandaClient()
@@ -120,29 +122,48 @@ def test_transactions_count_bounds() -> None:
                 pass
         for ok in (1, 50, 1000):  # boundary values must be accepted
             out = asyncio.run(c.transactions(count=ok))
-            assert out == {"transactions": [], "count": 0}
+            assert out == {"transactions": [], "lastTransactionID": "0"}
 
 
-def test_transactions_params_and_slice() -> None:
+def test_transactions_idrange() -> None:
     calls: list[tuple] = []
 
-    async def fake_get(self, path, params=None):  # noqa: ANN001
+    async def fake_get(self, path, params=None):
         calls.append((path, params))
-        if len(calls) == 1:
-            page = "https://api-fxpractice.oanda.com/v3/accounts/x/transactions/idrange?from=1&to=5"
-            return {"pages": [page], "count": 5}
-        return {"transactions": [{"id": str(i)} for i in range(1, 6)]}
+        if path.endswith("/summary"):
+            return {"lastTransactionID": "5"}
+        return {
+            "transactions": [{"id": str(i)} for i in range(params["from"], params["to"] + 1)]
+        }
 
     with patch.object(OandaClient, "get", new=fake_get):
         out = asyncio.run(OandaClient().transactions(count=2))
-    first_params = calls[0][1]
-    assert first_params["pageSize"] == 2
-    # explicit range so accounts older than 365 days keep working
-    assert "from" in first_params and "to" in first_params
-    assert first_params["from"] < first_params["to"]
-    # the last N of the most recent page are returned
+    assert calls[0][0].endswith("/summary")
+    path, params = calls[1]
+    assert path.endswith("/transactions/idrange")
+    # the newest `count` transactions are exactly the last `count` IDs,
+    # independent of the account's age — no date window involved
+    assert params == {"from": 4, "to": 5}
     assert [t["id"] for t in out["transactions"]] == ["4", "5"]
-    assert out["count"] == 5
+    assert out["lastTransactionID"] == "5"
+
+
+def test_transactions_type_filter_scans_back() -> None:
+    calls: list[tuple] = []
+
+    async def fake_get(self, path, params=None):
+        calls.append((path, params))
+        if path.endswith("/summary"):
+            return {"lastTransactionID": "1500"}
+        if params["from"] == 501:  # newest chunk holds no matching type
+            return {"transactions": []}
+        return {"transactions": [{"id": "10", "type": "ORDER_FILL"}]}
+
+    with patch.object(OandaClient, "get", new=fake_get):
+        out = asyncio.run(OandaClient().transactions(count=1, type_filter="ORDER_FILL"))
+    assert calls[1][1] == {"from": 501, "to": 1500, "type": "ORDER_FILL"}
+    assert calls[2][1] == {"from": 1, "to": 500, "type": "ORDER_FILL"}
+    assert [t["id"] for t in out["transactions"]] == ["10"]
 
 
 def test_candles_time_validation() -> None:
@@ -158,11 +179,79 @@ def test_candles_time_validation() -> None:
             raise AssertionError("inverted from/to did not raise ValueError")
         except ValueError:
             pass
+        # only full RFC3339 date-times with a timezone are accepted
+        bad_times = (
+            "not-a-time",
+            "2026-07-01",  # date only
+            "2026-07-01T00:00:00",  # no timezone
+            "2026-07-01T00:00:00+0900",  # malformed offset
+        )
+        for bad in bad_times:
+            try:
+                asyncio.run(server.get_candles(instrument="USD_JPY", from_time=bad))
+                raise AssertionError(f"{bad!r} did not raise ValueError")
+            except ValueError:
+                pass
+        for good in ("2026-07-01T00:00:00Z", "2026-07-01T09:30:00.123+09:00"):
+            asyncio.run(server.get_candles(instrument="USD_JPY", from_time=good))
+
+
+def _mock_transport(handler):
+    real_client = httpx.AsyncClient
+
+    def make(**kwargs):
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    return patch.object(httpx, "AsyncClient", make)
+
+
+def test_http_error_handling() -> None:
+    c = OandaClient()
+
+    def err_400(request):
+        return httpx.Response(400, json={"errorMessage": "Invalid value specified"})
+
+    with _mock_transport(err_400):
         try:
-            asyncio.run(server.get_candles(instrument="USD_JPY", from_time="not-a-time"))
-            raise AssertionError("malformed timestamp did not raise ValueError")
-        except ValueError:
-            pass
+            asyncio.run(c.get("/v3/test"))
+            raise AssertionError("HTTP 400 did not raise OandaError")
+        except OandaError as e:
+            assert "400" in str(e) and "Invalid value specified" in str(e)
+
+    def non_json(request):
+        return httpx.Response(200, text="<html>proxy login page</html>")
+
+    with _mock_transport(non_json):
+        try:
+            asyncio.run(c.get("/v3/test"))
+            raise AssertionError("non-JSON body did not raise OandaError")
+        except OandaError as e:
+            assert "non-JSON" in str(e)
+
+    def boom(request):
+        raise httpx.ConnectTimeout("timed out")
+
+    with _mock_transport(boom):
+        try:
+            asyncio.run(c.get("/v3/test"))
+            raise AssertionError("timeout did not raise OandaError")
+        except OandaError as e:
+            assert "ConnectTimeout" in str(e)
+
+
+def test_missing_credentials_raise() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        empty = Path(td)
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(Path, "home", return_value=empty),
+            patch.object(Path, "cwd", return_value=empty),
+        ):
+            try:
+                OandaClient()
+                raise AssertionError("missing credentials did not raise OandaError")
+            except OandaError as e:
+                assert "OANDA_API_TOKEN" in str(e)
 
 
 def test_dotenv_restricts_keys_and_prefers_home() -> None:

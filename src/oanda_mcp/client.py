@@ -9,7 +9,6 @@ Configuration (environment variables, or a .env file — see _load_dotenv):
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,10 @@ _HOSTS = {
     "practice": "https://api-fxpractice.oanda.com",
     "live": "https://api-fxtrade.oanda.com",
 }
+
+# How far back a type-filtered transaction search may scan, in chunks of
+# 1000 IDs (the idrange endpoint's per-request maximum).
+_MAX_IDRANGE_CHUNKS = 5
 
 
 def _load_dotenv() -> None:
@@ -58,7 +61,7 @@ def _load_dotenv() -> None:
         except OSError:
             continue
         # Tolerate Windows editors/PowerShell: UTF-8 BOM and UTF-16 files.
-        if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
             text = raw.decode("utf-16")
         else:
             text = raw.decode("utf-8-sig", errors="replace")
@@ -78,10 +81,6 @@ def _load_dotenv() -> None:
             if key not in os.environ:
                 os.environ[key] = value
         return  # only the first .env with OANDA_ keys is loaded
-
-
-def _rfc3339(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class OandaError(RuntimeError):
@@ -143,7 +142,7 @@ class OandaClient:
         if resp.status_code >= 400:
             try:
                 detail = resp.json().get("errorMessage", resp.text)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 detail = resp.text
             raise OandaError(f"OANDA API error {resp.status_code}: {detail}")
         try:
@@ -206,28 +205,44 @@ class OandaClient:
         count: int = 50,
         type_filter: str | None = None,
     ) -> dict[str, Any]:
+        """Return the most recent ``count`` transactions.
+
+        Transaction IDs are sequential integers, so the newest ``count``
+        transactions are exactly the ID range ``last-count+1 .. last``.
+        Unlike a time-based query (which is capped at 365 days per request
+        and would miss older activity on dormant accounts), this works
+        regardless of the account's age or trading frequency.
+
+        With ``type_filter``, matching transactions may be sparse, so the
+        scan walks backwards in chunks of 1000 IDs until ``count`` matches
+        are found — bounded to the most recent
+        ``_MAX_IDRANGE_CHUNKS * 1000`` transactions.
+        """
         if not 1 <= count <= 1000:
             raise ValueError(f"count must be between 1 and 1000, got {count}")
-        # Without an explicit range the API defaults to "account creation
-        # time .. now", but a single query may span at most 365 days, so
-        # accounts older than a year would fail. Query the last 364 days.
-        now = datetime.now(timezone.utc)
-        # sinceid-based pagination is overkill for an MCP tool; use the
-        # idrange endpoint via pages returned by /transactions.
-        params: dict[str, Any] = {
-            "pageSize": count,
-            "from": _rfc3339(now - timedelta(days=364)),
-            "to": _rfc3339(now),
-        }
-        if type_filter:
-            params["type"] = type_filter
-        first = await self.get(f"/v3/accounts/{self.account_id}/transactions", params)
-        pages = first.get("pages") or []
-        if not pages:
-            return {"transactions": [], "count": first.get("count", 0)}
-        # Fetch the last page (most recent transactions).
-        last_page_url = pages[-1]
-        path = last_page_url.split(self.base_url)[-1]
-        data = await self.get(path)
-        txns = data.get("transactions", [])[-count:]
-        return {"transactions": txns, "count": first.get("count", 0)}
+        summary = await self.get(f"/v3/accounts/{self.account_id}/summary")
+        last_raw = summary.get("lastTransactionID") or summary.get("account", {}).get(
+            "lastTransactionID"
+        )
+        try:
+            last = int(last_raw)
+        except (TypeError, ValueError):
+            last = 0
+        if last < 1:  # no transactions on this account yet
+            return {"transactions": [], "lastTransactionID": last_raw}
+
+        path = f"/v3/accounts/{self.account_id}/transactions/idrange"
+        collected: list[dict[str, Any]] = []
+        to_id = last
+        for _ in range(_MAX_IDRANGE_CHUNKS):
+            span = 1000 if type_filter else count
+            from_id = max(1, to_id - span + 1)
+            params: dict[str, Any] = {"from": from_id, "to": to_id}
+            if type_filter:
+                params["type"] = type_filter
+            data = await self.get(path, params)
+            collected = data.get("transactions", []) + collected
+            if not type_filter or len(collected) >= count or from_id == 1:
+                break
+            to_id = from_id - 1
+        return {"transactions": collected[-count:], "lastTransactionID": last_raw}

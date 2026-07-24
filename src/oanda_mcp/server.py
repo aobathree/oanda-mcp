@@ -7,7 +7,8 @@ or:        python -m oanda_mcp.server
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -41,18 +42,29 @@ def _dump(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
+# Full RFC3339 date-time: date, "T", time, and a UTC offset are all
+# required — date-only or offset-less values are rejected.
+_RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$"
+)
+
+
 def _check_time_range(from_time: str | None, to_time: str | None) -> None:
     """Reject malformed RFC3339 timestamps and inverted from/to ranges
     before an authenticated API request is sent."""
 
     def parse(name: str, value: str) -> datetime:
+        if not _RFC3339_RE.match(value):
+            raise ValueError(
+                f"{name} must be a full RFC3339 date-time with timezone "
+                f"like '2026-07-01T00:00:00Z', got {value!r}"
+            )
         try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return datetime.fromisoformat(value.upper().replace("Z", "+00:00"))
         except ValueError:
             raise ValueError(
-                f"{name} must be RFC3339 like '2026-07-01T00:00:00Z', got {value!r}"
+                f"{name} is not a valid date-time: {value!r}"
             ) from None
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
     start = parse("from_time", from_time) if from_time else None
     end = parse("to_time", to_time) if to_time else None
@@ -177,7 +189,8 @@ async def get_recent_transactions(
     Args:
         count: How many recent transactions to return (1-1000, default 50).
         type_filter: Optional comma-separated transaction type filter,
-            e.g. "ORDER_FILL" or "MARKET_ORDER,ORDER_FILL".
+            e.g. "ORDER_FILL" or "MARKET_ORDER,ORDER_FILL". Searches the
+            most recent 5000 transactions at most.
     """
     data = await _client().transactions(count=count, type_filter=type_filter)
     return _dump(data)
