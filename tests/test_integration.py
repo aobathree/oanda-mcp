@@ -59,6 +59,13 @@ def test_candles(c: OandaClient) -> None:
     assert {"o", "h", "l", "c"} <= set(candles[0]["mid"])
 
 
+def test_transactions(c: OandaClient) -> None:
+    # exercises the explicit from/to range (last 364 days) and pageSize
+    data = asyncio.run(c.transactions(count=5))
+    assert "transactions" in data
+    assert len(data["transactions"]) <= 5
+
+
 def test_instruments(c: OandaClient) -> None:
     data = asyncio.run(c.instruments("USD_JPY"))
     names = {i["name"] for i in data["instruments"]}

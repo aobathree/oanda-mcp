@@ -9,6 +9,7 @@ Configuration (environment variables, or a .env file — see _load_dotenv):
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,48 +24,64 @@ _HOSTS = {
 
 
 def _load_dotenv() -> None:
-    """Load a .env file into os.environ (without overriding existing vars).
+    """Load OANDA_* keys from a .env file into os.environ.
 
-    Searched in order; the first file found wins:
+    Only keys with the OANDA_ prefix are imported, and existing environment
+    variables are never overridden — so a .env file sitting in an untrusted
+    working directory cannot inject proxy/TLS settings (HTTPS_PROXY,
+    SSL_CERT_FILE, ...) into the authenticated HTTP requests.
+
+    Searched in order; the first file containing at least one OANDA_ key
+    wins, files without any OANDA_ key are skipped:
       1. $OANDA_DOTENV (explicit path, if set)
-      2. .env in the current working directory and its parents
-      3. .env at the project root (three levels up from this file,
-         for a source checkout like D:/oanda-mcp)
-      4. ~/.oanda/.env — the recommended location, outside any project
+      2. ~/.oanda/.env — the recommended location, outside any project
          directory so coding agents and other tools working in the
          project tree cannot read the credentials as a workspace file
+      3. .env in the current working directory and its parents
+      4. .env at the project root (three levels up from this file,
+         for a source checkout like D:/oanda-mcp)
     """
     candidates: list[Path] = []
     explicit = os.environ.get("OANDA_DOTENV")
     if explicit:
         candidates.append(Path(explicit))
+    candidates.append(Path.home() / ".oanda" / ".env")
     cwd = Path.cwd()
     candidates.extend(p / ".env" for p in [cwd, *cwd.parents])
     candidates.append(Path(__file__).resolve().parents[2] / ".env")
-    candidates.append(Path.home() / ".oanda" / ".env")
 
     for path in candidates:
         try:
             if not path.is_file():
                 continue
+            raw = path.read_bytes()
         except OSError:
             continue
-        raw = path.read_bytes()
         # Tolerate Windows editors/PowerShell: UTF-8 BOM and UTF-16 files.
         if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
             text = raw.decode("utf-16")
         else:
             text = raw.decode("utf-8-sig", errors="replace")
+        found: dict[str, str] = {}
         for line in text.splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
             key = key.strip()
-            value = value.strip().strip("'\"")
-            if key and key not in os.environ:
+            if not key.startswith("OANDA_"):
+                continue
+            found[key] = value.strip().strip("'\"")
+        if not found:
+            continue  # unrelated .env (some other project) — keep searching
+        for key, value in found.items():
+            if key not in os.environ:
                 os.environ[key] = value
-        return  # only the first .env found is loaded
+        return  # only the first .env with OANDA_ keys is loaded
+
+
+def _rfc3339(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class OandaError(RuntimeError):
@@ -189,9 +206,19 @@ class OandaClient:
         count: int = 50,
         type_filter: str | None = None,
     ) -> dict[str, Any]:
+        if not 1 <= count <= 1000:
+            raise ValueError(f"count must be between 1 and 1000, got {count}")
+        # Without an explicit range the API defaults to "account creation
+        # time .. now", but a single query may span at most 365 days, so
+        # accounts older than a year would fail. Query the last 364 days.
+        now = datetime.now(timezone.utc)
         # sinceid-based pagination is overkill for an MCP tool; use the
         # idrange endpoint via pages returned by /transactions.
-        params: dict[str, Any] = {"pageSize": min(count, 1000)}
+        params: dict[str, Any] = {
+            "pageSize": count,
+            "from": _rfc3339(now - timedelta(days=364)),
+            "to": _rfc3339(now),
+        }
         if type_filter:
             params["type"] = type_filter
         first = await self.get(f"/v3/accounts/{self.account_id}/transactions", params)
