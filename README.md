@@ -58,14 +58,27 @@ venvを作っていれば通常は問題になりません。
 
 ## 3. 認証情報の設定(.env)
 
-プロジェクト直下に `.env` ファイルを作ります(サーバー起動時に自動で読み込まれます。
-環境変数の設定は不要です):
+`.env` ファイルは**プロジェクトの外**、ホームディレクトリ配下
+(Windows: `%USERPROFILE%\.oanda\.env`、macOS/Linux: `~/.oanda/.env`)に
+置きます(サーバー起動時に自動で読み込まれます。環境変数の設定は不要です):
+
+Windows:
 
 ```powershell
-copy .env.example .env    # macOS/Linux: cp .env.example .env
+New-Item -ItemType Directory -Force $env:USERPROFILE\.oanda | Out-Null
+copy .env.example $env:USERPROFILE\.oanda\.env
+notepad $env:USERPROFILE\.oanda\.env
 ```
 
-`.env` をエディタで開き、自分の値に書き換えます:
+macOS/Linux:
+
+```bash
+mkdir -p ~/.oanda
+cp .env.example ~/.oanda/.env
+open -e ~/.oanda/.env   # または任意のエディタで開く
+```
+
+エディタが開いたら自分の値に書き換えます:
 
 ```
 OANDA_API_TOKEN=あなたのトークン
@@ -73,17 +86,22 @@ OANDA_ACCOUNT_ID=101-001-1234567-001
 OANDA_ENV=practice
 ```
 
-`.env` の検索順は「`OANDA_DOTENV` で明示指定したパス → カレントディレクトリと
-その親 → プロジェクトルート」です。同名の環境変数が既に設定されている場合は
-そちらが優先されます。
+**プロジェクト直下に `.env` を置かない理由**: このフォルダーで Claude Code などの
+コーディングエージェントを使うと、ワークスペース内のファイルとして認証情報が
+読める状態になるためです(Webull 公式 MCP サーバーのセキュリティ指針に倣った
+配置です)。`.gitignore` では引き続き `.env` を除外していますが、これは誤って
+プロジェクト内に置いてしまった場合の保険です。
 
-**注意**: `.env` は `.gitignore` で除外済みです。コミットしないでください。
+`.env` の検索順は「`OANDA_DOTENV` で明示指定したパス → ホームの `.oanda/.env`
+→ カレントディレクトリとその親 → プロジェクトルート」です。読み込まれるのは
+`OANDA_` で始まるキーだけで(`HTTPS_PROXY` などの通信系キーは無視されます)、
+`OANDA_` キーを1つも含まないファイルはスキップして次の候補へ進みます。同名の
+環境変数が既に設定されている場合はそちらが優先されます。
 
 ## 4. 動作確認(MCP Inspector)
 
 ```powershell
 # Windows
-cd D:\oanda-mcp   # .env のある場所で起動する
 npx @modelcontextprotocol/inspector oanda-mcp
 ```
 
@@ -92,6 +110,9 @@ npx @modelcontextprotocol/inspector oanda-mcp
 cd ~/oanda-mcp
 npx @modelcontextprotocol/inspector .venv/bin/oanda-mcp
 ```
+
+(`.env` はホームの `.oanda/.env` から自動で読み込まれるため、
+どのディレクトリから起動しても構いません)
 
 ブラウザで Inspector が開いたら:
 
@@ -109,14 +130,12 @@ npx @modelcontextprotocol/inspector .venv/bin/oanda-mcp
 
 **`command` には `oanda-mcp` 実行ファイルのフルパスを指定してください。**
 Claude Desktop はターミナルと同じ PATH を引き継がないため、コマンド名だけでは
-起動に失敗することがあります。フルパスは PowerShell で確認できます:
+起動に失敗することがあります。フルパスは Windows なら PowerShell で確認できます:
 
 ```powershell
 (Get-Command oanda-mcp).Source
 # 例: C:\Users\<ユーザー名>\AppData\Local\Programs\Python\Python311\Scripts\oanda-mcp.exe
 ```
-
-確認したパスを使って設定します。
 
 Windows(JSON内の `\` は `\\` にエスケープ):
 
@@ -124,10 +143,7 @@ Windows(JSON内の `\` は `\\` にエスケープ):
 {
   "mcpServers": {
     "oanda": {
-      "command": "C:\\Users\\<ユーザー名>\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\oanda-mcp.exe",
-      "env": {
-        "OANDA_DOTENV": "D:\\oanda-mcp\\.env"
-      }
+      "command": "C:\\Users\\<ユーザー名>\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\oanda-mcp.exe"
     }
   }
 }
@@ -140,21 +156,19 @@ macOS(venv内の実行ファイルをフルパスで指定。activateは使え�
 {
   "mcpServers": {
     "oanda": {
-      "command": "/Users/<ユーザー名>/oanda-mcp/.venv/bin/oanda-mcp",
-      "env": {
-        "OANDA_DOTENV": "/Users/<ユーザー名>/oanda-mcp/.env"
-      }
+      "command": "/Users/<ユーザー名>/oanda-mcp/.venv/bin/oanda-mcp"
     }
   }
 }
 ```
 
+`.env` はホームの `.oanda/.env` から自動で読み込まれるため、`env` ブロックは
+不要です。別の場所に置いた場合のみ、`env` ブロックで `OANDA_DOTENV` にそのパスを
+指定してください。
+
 既に他の設定(`preferences` など)があるファイルの場合、`mcpServers` は
 最上位(一番外側の `{}` の直下)に、既存ブロックとカンマで区切って追加します。
 保存前に `python3 -m json.tool <設定ファイル>` で構文チェックすると安全です。
-
-`OANDA_DOTENV` で `.env` の場所を明示しているのは、Claude Desktop からの起動では
-カレントディレクトリがプロジェクト外になるためです。
 
 保存後、Claude Desktop を**完全に再起動**(タスクトレイのアイコンからも終了)すると
 「oanda」サーバーが認識されます。「ドル円の今のレートは?」のように話しかければ
@@ -163,15 +177,45 @@ macOS(venv内の実行ファイルをフルパスで指定。activateは使え�
 ## 6. Claude Code への登録(任意)
 
 ```powershell
-claude mcp add oanda -e OANDA_DOTENV="D:\oanda-mcp\.env" -- oanda-mcp
+claude mcp add oanda -- oanda-mcp
 ```
 
 Claude Code はターミナルから起動するため、こちらはコマンド名のままで動きます
 (動かない場合はフルパスを指定してください)。
 
+### どのプロジェクトからでも使う(user スコープ + フルパス)
+
+上のコマンドはデフォルトの **local スコープ**(実行したプロジェクト限定)で
+登録されます。どのプロジェクトからでも使いたい場合は `--scope user` を
+付けます。また、デスクトップアプリ版など PATH を引き継がない環境でも
+確実に起動するよう、`command` には実行ファイルのフルパスを指定するのが
+安全です:
+
+```powershell
+# フルパスを確認
+(Get-Command oanda-mcp).Source
+# 例: C:\Users\<ユーザー名>\...\Python313\Scripts\oanda-mcp.exe
+
+# user スコープでフルパス登録
+claude mcp add --scope user oanda -- "<上で確認したフルパス>"
+```
+
+登録後は接続状態を確認できます:
+
+```powershell
+claude mcp list
+# oanda: ...\oanda-mcp.exe - √ Connected と表示されれば成功
+```
+
+設定は `%USERPROFILE%\.claude.json` に保存されます。なお、Microsoft Store 版
+Python を使っている場合、Python のバージョンアップで Scripts フォルダーの
+パスが変わるため、その際は `claude mcp add` を再実行してください。
+起動中の Claude Code セッションには途中から追加したサーバーは反映されません。
+新しいセッションを開くとツールが使えるようになります。
+
 ## 7. 環境変数リファレンス
 
-通常は `.env` に書くだけで足ります。
+通常はホームの `.oanda/.env` に書くだけで足ります。
 
 | 変数 | 必須 | 説明 |
 |---|---|---|
@@ -182,14 +226,23 @@ Claude Code はターミナルから起動するため、こちらはコマン�
 
 ## テスト
 
+2層構成です(公式 Alpaca MCP サーバーのテスト戦略に倣ったもの):
+
 ```powershell
-python tests\test_server.py
+python tests\test_server.py        # ユニット: モックのみ、認証情報・ネットワーク不要
+python tests\test_integration.py   # 統合: practice口座の実APIに read-only GET で接続
 ```
+
+統合テストは `.env` に実際の認証情報がないとき、および `OANDA_ENV=live` の
+ときは自動的にスキップされます(安全のため live 口座では実行されません)。
+
+なお、API リクエストには `User-Agent: oanda-mcp/<version>` が付与されます。
 
 ## 注意事項
 
-- トークンは口座への広い権限を持ちます。`.env` の取り扱いに注意し、
-  リポジトリにコミットしないでください。
+- トークンは口座への広い権限を持ちます。`.env` はプロジェクトの外
+  (ホームの `.oanda/.env`)に置き、リポジトリにコミットしたり
+  チャットに貼り付けたりしないでください。
 - `OANDA_ENV=live` にすると本番口座のデータを参照します(このサーバーは
   参照のみなので発注はできませんが、口座情報は実データになります)。
 - OANDA証券(日本)の口座でAPIを使う場合は、口座コースごとのAPI利用条件を

@@ -59,6 +59,14 @@ def test_candles(c: OandaClient) -> None:
     assert {"o", "h", "l", "c"} <= set(candles[0]["mid"])
 
 
+def test_transactions(c: OandaClient) -> None:
+    # exercises the summary lookup + idrange fetch of the newest IDs
+    data = asyncio.run(c.transactions(count=5))
+    assert "transactions" in data
+    assert len(data["transactions"]) <= 5
+    assert "lastTransactionID" in data
+
+
 def test_instruments(c: OandaClient) -> None:
     data = asyncio.run(c.instruments("USD_JPY"))
     names = {i["name"] for i in data["instruments"]}
@@ -79,7 +87,7 @@ if __name__ == "__main__":
             try:
                 fn(client)
                 print(f"PASS {name}")
-            except Exception as e:  # noqa: BLE001 - report API errors as failures
+            except Exception as e:  # report API errors as failures
                 failures += 1
                 print(f"FAIL {name}: {type(e).__name__}: {e}")
     raise SystemExit(1 if failures else 0)

@@ -21,50 +21,66 @@ _HOSTS = {
     "live": "https://api-fxtrade.oanda.com",
 }
 
+# How far back a type-filtered transaction search may scan, in chunks of
+# 1000 IDs (the idrange endpoint's per-request maximum).
+_MAX_IDRANGE_CHUNKS = 5
+
 
 def _load_dotenv() -> None:
-    """Load a .env file into os.environ (without overriding existing vars).
+    """Load OANDA_* keys from a .env file into os.environ.
 
-    Searched in order; the first file found wins:
+    Only keys with the OANDA_ prefix are imported, and existing environment
+    variables are never overridden — so a .env file sitting in an untrusted
+    working directory cannot inject proxy/TLS settings (HTTPS_PROXY,
+    SSL_CERT_FILE, ...) into the authenticated HTTP requests.
+
+    Searched in order; the first file containing at least one OANDA_ key
+    wins, files without any OANDA_ key are skipped:
       1. $OANDA_DOTENV (explicit path, if set)
-      2. .env in the current working directory and its parents
-      3. .env at the project root (three levels up from this file,
-         for a source checkout like D:/oanda-mcp)
-      4. ~/.oanda/.env — the recommended location, outside any project
+      2. ~/.oanda/.env — the recommended location, outside any project
          directory so coding agents and other tools working in the
          project tree cannot read the credentials as a workspace file
+      3. .env in the current working directory and its parents
+      4. .env at the project root (three levels up from this file,
+         for a source checkout like D:/oanda-mcp)
     """
     candidates: list[Path] = []
     explicit = os.environ.get("OANDA_DOTENV")
     if explicit:
         candidates.append(Path(explicit))
+    candidates.append(Path.home() / ".oanda" / ".env")
     cwd = Path.cwd()
     candidates.extend(p / ".env" for p in [cwd, *cwd.parents])
     candidates.append(Path(__file__).resolve().parents[2] / ".env")
-    candidates.append(Path.home() / ".oanda" / ".env")
 
     for path in candidates:
         try:
             if not path.is_file():
                 continue
+            raw = path.read_bytes()
         except OSError:
             continue
-        raw = path.read_bytes()
         # Tolerate Windows editors/PowerShell: UTF-8 BOM and UTF-16 files.
-        if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
             text = raw.decode("utf-16")
         else:
             text = raw.decode("utf-8-sig", errors="replace")
+        found: dict[str, str] = {}
         for line in text.splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
             key = key.strip()
-            value = value.strip().strip("'\"")
-            if key and key not in os.environ:
+            if not key.startswith("OANDA_"):
+                continue
+            found[key] = value.strip().strip("'\"")
+        if not found:
+            continue  # unrelated .env (some other project) — keep searching
+        for key, value in found.items():
+            if key not in os.environ:
                 os.environ[key] = value
-        return  # only the first .env found is loaded
+        return  # only the first .env with OANDA_ keys is loaded
 
 
 class OandaError(RuntimeError):
@@ -126,7 +142,7 @@ class OandaClient:
         if resp.status_code >= 400:
             try:
                 detail = resp.json().get("errorMessage", resp.text)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 detail = resp.text
             raise OandaError(f"OANDA API error {resp.status_code}: {detail}")
         try:
@@ -189,18 +205,44 @@ class OandaClient:
         count: int = 50,
         type_filter: str | None = None,
     ) -> dict[str, Any]:
-        # sinceid-based pagination is overkill for an MCP tool; use the
-        # idrange endpoint via pages returned by /transactions.
-        params: dict[str, Any] = {"pageSize": min(count, 1000)}
-        if type_filter:
-            params["type"] = type_filter
-        first = await self.get(f"/v3/accounts/{self.account_id}/transactions", params)
-        pages = first.get("pages") or []
-        if not pages:
-            return {"transactions": [], "count": first.get("count", 0)}
-        # Fetch the last page (most recent transactions).
-        last_page_url = pages[-1]
-        path = last_page_url.split(self.base_url)[-1]
-        data = await self.get(path)
-        txns = data.get("transactions", [])[-count:]
-        return {"transactions": txns, "count": first.get("count", 0)}
+        """Return the most recent ``count`` transactions.
+
+        Transaction IDs are sequential integers, so the newest ``count``
+        transactions are exactly the ID range ``last-count+1 .. last``.
+        Unlike a time-based query (which is capped at 365 days per request
+        and would miss older activity on dormant accounts), this works
+        regardless of the account's age or trading frequency.
+
+        With ``type_filter``, matching transactions may be sparse, so the
+        scan walks backwards in chunks of 1000 IDs until ``count`` matches
+        are found — bounded to the most recent
+        ``_MAX_IDRANGE_CHUNKS * 1000`` transactions.
+        """
+        if not 1 <= count <= 1000:
+            raise ValueError(f"count must be between 1 and 1000, got {count}")
+        summary = await self.get(f"/v3/accounts/{self.account_id}/summary")
+        last_raw = summary.get("lastTransactionID") or summary.get("account", {}).get(
+            "lastTransactionID"
+        )
+        try:
+            last = int(last_raw)
+        except (TypeError, ValueError):
+            last = 0
+        if last < 1:  # no transactions on this account yet
+            return {"transactions": [], "lastTransactionID": last_raw}
+
+        path = f"/v3/accounts/{self.account_id}/transactions/idrange"
+        collected: list[dict[str, Any]] = []
+        to_id = last
+        for _ in range(_MAX_IDRANGE_CHUNKS):
+            span = 1000 if type_filter else count
+            from_id = max(1, to_id - span + 1)
+            params: dict[str, Any] = {"from": from_id, "to": to_id}
+            if type_filter:
+                params["type"] = type_filter
+            data = await self.get(path, params)
+            collected = data.get("transactions", []) + collected
+            if not type_filter or len(collected) >= count or from_id == 1:
+                break
+            to_id = from_id - 1
+        return {"transactions": collected[-count:], "lastTransactionID": last_raw}
