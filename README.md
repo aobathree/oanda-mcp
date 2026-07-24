@@ -27,23 +27,55 @@ OANDA v20 REST API の **参照系(read-only)** 機能を Claude から使える
 
 ## 2. インストール
 
-Python 3.10 以上が必要です。
+**Python 3.10 以上が必要です。**
+
+### Windows
 
 ```powershell
 cd D:\oanda-mcp
 pip install -e .
 ```
 
+### macOS
+
+macOS標準の `python3` は 3.9 のことがあり(その場合インストールが
+`requires a different Python` エラーで失敗します)、システムへの直接
+インストールも制限されているため、Homebrewで新しいPythonを入れて
+venv(仮想環境)を使います:
+
+```bash
+brew install python
+cd ~/oanda-mcp
+python3.13 -m venv .venv        # brewで入ったバージョンに合わせる(python3.12等)
+source .venv/bin/activate
+pip install -e .
+```
+
+補足: venvのpipが古いと `pyproject.toml` のみのプロジェクトを
+editableインストールできません(PEP 660はpip 21.3以降)。その場合は
+`pip install -U pip` してから再実行してください。新しいPythonで
+venvを作っていれば通常は問題になりません。
+
 ## 3. 認証情報の設定(.env)
 
-`.env` ファイルは**プロジェクトの外**、ホームディレクトリ配下の
-`%USERPROFILE%\.oanda\.env` に置きます(サーバー起動時に自動で読み込まれます。
-環境変数の設定は不要です):
+`.env` ファイルは**プロジェクトの外**、ホームディレクトリ配下
+(Windows: `%USERPROFILE%\.oanda\.env`、macOS/Linux: `~/.oanda/.env`)に
+置きます(サーバー起動時に自動で読み込まれます。環境変数の設定は不要です):
+
+Windows:
 
 ```powershell
 New-Item -ItemType Directory -Force $env:USERPROFILE\.oanda | Out-Null
 copy .env.example $env:USERPROFILE\.oanda\.env
 notepad $env:USERPROFILE\.oanda\.env
+```
+
+macOS/Linux:
+
+```bash
+mkdir -p ~/.oanda
+cp .env.example ~/.oanda/.env
+open -e ~/.oanda/.env   # または任意のエディタで開く
 ```
 
 エディタが開いたら自分の値に書き換えます:
@@ -60,7 +92,7 @@ OANDA_ENV=practice
 配置です)。`.gitignore` では引き続き `.env` を除外していますが、これは誤って
 プロジェクト内に置いてしまった場合の保険です。
 
-`.env` の検索順は「`OANDA_DOTENV` で明示指定したパス → `%USERPROFILE%\.oanda\.env`
+`.env` の検索順は「`OANDA_DOTENV` で明示指定したパス → ホームの `.oanda/.env`
 → カレントディレクトリとその親 → プロジェクトルート」です。読み込まれるのは
 `OANDA_` で始まるキーだけで(`HTTPS_PROXY` などの通信系キーは無視されます)、
 `OANDA_` キーを1つも含まないファイルはスキップして次の候補へ進みます。同名の
@@ -69,10 +101,17 @@ OANDA_ENV=practice
 ## 4. 動作確認(MCP Inspector)
 
 ```powershell
+# Windows
 npx @modelcontextprotocol/inspector oanda-mcp
 ```
 
-(`.env` は `%USERPROFILE%\.oanda\.env` から自動で読み込まれるため、
+```bash
+# macOS(venvの実行ファイルを指定)
+cd ~/oanda-mcp
+npx @modelcontextprotocol/inspector .venv/bin/oanda-mcp
+```
+
+(`.env` はホームの `.oanda/.env` から自動で読み込まれるため、
 どのディレクトリから起動しても構いません)
 
 ブラウザで Inspector が開いたら:
@@ -91,14 +130,14 @@ npx @modelcontextprotocol/inspector oanda-mcp
 
 **`command` には `oanda-mcp` 実行ファイルのフルパスを指定してください。**
 Claude Desktop はターミナルと同じ PATH を引き継がないため、コマンド名だけでは
-起動に失敗することがあります。フルパスは PowerShell で確認できます:
+起動に失敗することがあります。フルパスは Windows なら PowerShell で確認できます:
 
 ```powershell
 (Get-Command oanda-mcp).Source
 # 例: C:\Users\<ユーザー名>\AppData\Local\Programs\Python\Python311\Scripts\oanda-mcp.exe
 ```
 
-確認したパスを使って設定します(JSON内の `\` は `\\` にエスケープ):
+Windows(JSON内の `\` は `\\` にエスケープ):
 
 ```json
 {
@@ -110,9 +149,26 @@ Claude Desktop はターミナルと同じ PATH を引き継がないため、�
 }
 ```
 
-`.env` は `%USERPROFILE%\.oanda\.env` から自動で読み込まれるため、`env` ブロックは
+macOS(venv内の実行ファイルをフルパスで指定。activateは使えないため
+フルパス指定が必須です):
+
+```json
+{
+  "mcpServers": {
+    "oanda": {
+      "command": "/Users/<ユーザー名>/oanda-mcp/.venv/bin/oanda-mcp"
+    }
+  }
+}
+```
+
+`.env` はホームの `.oanda/.env` から自動で読み込まれるため、`env` ブロックは
 不要です。別の場所に置いた場合のみ、`env` ブロックで `OANDA_DOTENV` にそのパスを
 指定してください。
+
+既に他の設定(`preferences` など)があるファイルの場合、`mcpServers` は
+最上位(一番外側の `{}` の直下)に、既存ブロックとカンマで区切って追加します。
+保存前に `python3 -m json.tool <設定ファイル>` で構文チェックすると安全です。
 
 保存後、Claude Desktop を**完全に再起動**(タスクトレイのアイコンからも終了)すると
 「oanda」サーバーが認識されます。「ドル円の今のレートは?」のように話しかければ
@@ -159,7 +215,7 @@ Python を使っている場合、Python のバージョンアップで Scripts 
 
 ## 7. 環境変数リファレンス
 
-通常は `%USERPROFILE%\.oanda\.env` に書くだけで足ります。
+通常はホームの `.oanda/.env` に書くだけで足ります。
 
 | 変数 | 必須 | 説明 |
 |---|---|---|
@@ -185,7 +241,7 @@ python tests\test_integration.py   # 統合: practice口座の実APIに read-onl
 ## 注意事項
 
 - トークンは口座への広い権限を持ちます。`.env` はプロジェクトの外
-  (`%USERPROFILE%\.oanda\.env`)に置き、リポジトリにコミットしたり
+  (ホームの `.oanda/.env`)に置き、リポジトリにコミットしたり
   チャットに貼り付けたりしないでください。
 - `OANDA_ENV=live` にすると本番口座のデータを参照します(このサーバーは
   参照のみなので発注はできませんが、口座情報は実データになります)。
